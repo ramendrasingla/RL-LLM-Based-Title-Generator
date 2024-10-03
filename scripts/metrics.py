@@ -1,62 +1,53 @@
-import nltk
-from nltk import pos_tag, word_tokenize
-from transformers import pipeline
 import spacy
 from textblob import TextBlob
 from collections import Counter
 
-# Download NLTK resources
-nltk.download('averaged_perceptron_tagger')
-nltk.download('punkt')
-
-# Load sentiment analysis pipeline from transformers
-sentiment_analyzer = pipeline("sentiment-analysis")
-
 # Load spaCy model only once
 nlp = spacy.load("en_core_web_sm")
 
-# Function to count adjectives using NLTK
-def count_nltk_adjectives(text):
-    pos_tags = pos_tag(word_tokenize(text))
-    return len([word for word, pos in pos_tags if pos.startswith('JJ')])
-
-# Function to count adjectives using spaCy
-def count_spacy_adjectives(title):
+# Metric: Adjective Count using spaCy
+def count_adjectives(title):
     doc = nlp(title)
     adjectives = [token.text for token in doc if token.pos_ == "ADJ"]
     return len(adjectives)
 
-# POS Pattern Matching using NLTK
-def pos_pattern_matching(generated, human):
-    gen_pos = [tag for _, tag in pos_tag(word_tokenize(generated))]
-    human_pos = [tag for _, tag in pos_tag(word_tokenize(human))]
-    matching_score = sum(1 for g, h in zip(gen_pos, human_pos) if g == h)
-    return matching_score / len(human_pos) if human_pos else 0
-
-# POS Distribution using spaCy
+# Metric: POS Pattern Matching (POS distribution)
 def pos_distribution(title):
     doc = nlp(title)
     pos_tags = [token.pos_ for token in doc]
     return dict(Counter(pos_tags))
 
-# Function to calculate word diversity
-def word_diversity(text):
-    words = word_tokenize(text.lower())  # Use NLTK for tokenization
+# Metric: Calculate POS similarity between generated and human titles
+def pos_pattern_matching(generated_title, human_title):
+    gen_pos_dist = pos_distribution(generated_title)
+    human_pos_dist = pos_distribution(human_title)
+    
+    # Calculate similarity as the sum of the minimum occurrences for each POS tag
+    similarity = 0
+    for pos in set(gen_pos_dist.keys()).union(human_pos_dist.keys()):
+        similarity += min(gen_pos_dist.get(pos, 0), human_pos_dist.get(pos, 0))
+    
+    return similarity
+
+# Metric: Word Diversity
+def word_diversity(title):
+    words = title.lower().split()
     unique_words = set(words)
-    return len(unique_words) / len(words) if words else 0
+    diversity_score = len(unique_words) / len(words) if words else 0
+    return diversity_score
 
-# Sentiment analysis using NLTK and TextBlob
-def sentiment_match(generated, human):
-    gen_sentiment = sentiment_analyzer(generated)[0]
-    human_sentiment = sentiment_analyzer(human)[0]
-    return 1 if gen_sentiment['label'] == human_sentiment['label'] else -1
-
-# Emotional Tone using TextBlob
+# Metric: Sentiment (Emotional Tone)
 def get_sentiment(title):
     blob = TextBlob(title)
     return blob.sentiment.polarity
 
-# Reward function integrating all metrics
+# Metric: Sentiment Match
+def sentiment_match(generated_title, human_title):
+    gen_sentiment = get_sentiment(generated_title)
+    human_sentiment = get_sentiment(human_title)
+    return gen_sentiment - human_sentiment  # Reward for closeness in sentiment
+
+# Reward Function
 def reward_function(generated_title, human_title, weights=None):
     # Default weights if not provided
     if weights is None:
@@ -68,26 +59,18 @@ def reward_function(generated_title, human_title, weights=None):
         }
 
     # Calculate metrics
-    gen_adjectives_nltk = count_nltk_adjectives(generated_title)
-    human_adjectives_nltk = count_nltk_adjectives(human_title)
-    adjective_penalty_nltk = abs(gen_adjectives_nltk - human_adjectives_nltk)
-    
-    gen_adjectives_spacy = count_spacy_adjectives(generated_title)
-    human_adjectives_spacy = count_spacy_adjectives(human_title)
-    adjective_penalty_spacy = abs(gen_adjectives_spacy - human_adjectives_spacy)
+    gen_adjectives = count_adjectives(generated_title)
+    human_adjectives = count_adjectives(human_title)
+    adjective_penalty = abs(gen_adjectives - human_adjectives)
     
     pos_similarity = pos_pattern_matching(generated_title, human_title)
     diversity_penalty = word_diversity(generated_title)
     sentiment_reward = sentiment_match(generated_title, human_title)
 
-    # Combine both adjective penalties
-    total_adjective_penalty = adjective_penalty_nltk + adjective_penalty_spacy
-
     # Calculate the reward with weights
-    reward = (-total_adjective_penalty * weights['adjective_penalty'] +
+    reward = (-adjective_penalty * weights['adjective_penalty'] +
               pos_similarity * weights['pos_similarity'] -
               diversity_penalty * weights['diversity_penalty'] +
               sentiment_reward * weights['sentiment_reward'])
     
     return reward
-
