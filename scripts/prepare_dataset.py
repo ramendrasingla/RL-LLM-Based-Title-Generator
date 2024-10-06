@@ -17,6 +17,7 @@ def load_and_preprocess_cnn_dataset():
         processed_data = []
         
         for data in tqdm(cnn_split, desc=f"Processing {split} split"):
+            id = data['id']
             article = data['article']
             title = data['highlights']  # Treat 'highlights' as the title
 
@@ -28,6 +29,7 @@ def load_and_preprocess_cnn_dataset():
 
             # Store processed data
             processed_data.append({
+                "id": id,
                 "article": article,
                 "title": title,
                 "num_adjectives_in_title": num_adjectives_in_title,
