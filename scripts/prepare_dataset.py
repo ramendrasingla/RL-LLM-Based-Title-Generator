@@ -1,11 +1,14 @@
 import requests
 import pandas as pd
 import os
+from dotenv import load_dotenv
 from datetime import datetime
 
+# Load environment variables from the .env file
+load_dotenv(".env")
+
 # Your News API key
-#NOTE: Not adding my own API key for security concerns
-API_KEY = ''
+API_KEY = os.getenv('API_KEY')
 
 BASE_PATH = './data/raw'
 
