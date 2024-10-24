@@ -1,33 +1,78 @@
 import os
+import pandas as pd
 import torch
 import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification, GenerationConfig
+from torch.utils.data import DataLoader, TensorDataset
+
+from utils.constants import TRAIN_BATCH_SIZE, MAX_NEW_TOKENS
 
 # Setup device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def load_datasets(train_path, val_path, test_path, sample=None):
+    # Check if files exist
+    for path in [train_path, val_path, test_path]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File not found: {path}")
+    
+    # Load JSON files into Pandas DataFrames with NDJSON format
+    try:
+        train_df = pd.read_json(train_path, orient="records", lines=True)
+        val_df = pd.read_json(val_path, orient="records", lines=True)
+        test_df = pd.read_json(test_path, orient="records", lines=True)
+    except ValueError as e:
+        print(f"Error reading JSON file: {e}")
+        raise
+
+    # Sample if sample size is specified, and reset the index
+    if sample is not None:
+        train_df = train_df.sample(n=sample).reset_index(drop=True)
+        val_df = val_df.sample(n=sample).reset_index(drop=True)
+        test_df = test_df.sample(n=sample).reset_index(drop=True)
+
+    train_features = torch.tensor(train_df['content'].tolist())
+    train_labels = torch.tensor(train_df['title'].tolist())
+
+    val_features = torch.tensor(val_df['content'].tolist())
+    val_labels = torch.tensor(val_df['title'].tolist())
+
+    test_features = torch.tensor(test_df['content'].tolist())
+    test_labels = torch.tensor(test_df['title'].tolist())
+
+    # Create TensorDataset for train, validation, and test
+    train_dataset = TensorDataset(train_features, train_labels)
+    val_dataset = TensorDataset(val_features, val_labels)
+    test_dataset = TensorDataset(test_features, test_labels)
+
+    # Combine into a single dataset dictionary
+    dataset = {
+        'train': train_dataset,
+        'validation': val_dataset,
+        'test': test_dataset
+    }
+
+    return dataset
+
 def build_dataset(tokenizer, sample = None):
 
-    dataset = load_dataset("cnn_dailymail", "3.0.0")
-
-    if sample:
-        # Select a sample example
-        dataset["train"] = dataset["train"].select(range(sample))
-        dataset["validation"] = dataset["validation"].select(range(sample))
-        dataset["test"] = dataset["test"].select(range(sample))
+    dataset = load_datasets(train_path = "./data/preprocessed/train.json",
+                            test_path = "./data/preprocessed/test.json",
+                            val_path = "./data/preprocessed/val.json",
+                            sample = sample)
 
     def tokenize(dataset):
         
         # Wrap each article with the instruction.
         prompt = f"""
-                What would be an appropriate highlights for the article?
+                What would be an appropriate title for the article?
 
-                {dataset["article"]}
+                {dataset["content"]}
 
-                Highlights:
+                Title:
                 """
         dataset["input_ids"] = tokenizer.encode(prompt)
         
@@ -54,7 +99,7 @@ def load_reward_model(reward_model_name = "roberta-base-openai-detector"):
     reward_logits_kwargs = {
         "top_k": None, # Return all scores.
         "function_to_apply": "none", # Set to "none" to retrieve raw logits.
-        "batch_size": 16
+        "batch_size": TRAIN_BATCH_SIZE
     }
 
     return reward_pipe, reward_logits_kwargs
@@ -113,8 +158,6 @@ def evaluate_humanity(model,
     - std (numpy.float64): Standard deviation of the samples toxicity.
     """
 
-    max_new_tokens=100
-
     humanity_scores = []
     for idx, sample in tqdm(enumerate(dataset)):
         input_text = sample["query"]
@@ -125,7 +168,7 @@ def evaluate_humanity(model,
             
         input_ids = tokenizer(input_text, return_tensors="pt", padding=True).input_ids
         
-        generation_config = GenerationConfig(max_new_tokens=max_new_tokens,
+        generation_config = GenerationConfig(max_new_tokens=MAX_NEW_TOKENS,
                                              top_k=0.0,
                                              top_p=1.0,
                                              do_sample=True)

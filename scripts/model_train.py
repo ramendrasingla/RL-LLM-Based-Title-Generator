@@ -1,4 +1,7 @@
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
+
 import pandas as pd
 import torch
 import json
@@ -20,11 +23,12 @@ import evaluate
 from tqdm import tqdm
 tqdm.pandas()
 
-from metrics import (reward_function, count_adjectives, word_diversity,
+from utils.metrics import (reward_function, count_adjectives, word_diversity,
                      get_sentiment, pos_pattern_matching)
-from train_utils import (build_dataset, CastOutputToFloat, load_reward_model,
+from utils.train_utils import (build_dataset, CastOutputToFloat, load_reward_model,
                          trainable_model_parameters, evaluate_humanity, 
                          ppo_collator)
+from utils.constants import LORA_RANK_DIMS
 
 # Setup device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,8 +48,8 @@ dataset = build_dataset(tokenizer=tokenizer, sample=100)
 
 # Configuration for LoRA
 lora_config = LoraConfig(
-    r=32,  # Rank
-    lora_alpha=32,
+    r=LORA_RANK_DIMS,  # Rank
+    lora_alpha=LORA_RANK_DIMS,
     target_modules=["attn.c_attn"],
     lora_dropout=0.05,
     bias="none",
@@ -70,7 +74,7 @@ generated_text = tokenizer.decode(response_token_ids[0], skip_special_tokens=Tru
 
 print(generated_text)
 print("*"*50)
-print(dataset['train']['highlights'][0])
+print(dataset['train']['title'][0])
 
 # # Load or initialize the PEFT model with LoRA configuration
 # peft_model = get_peft_model(model, lora_config).to(device=device)
