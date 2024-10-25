@@ -26,7 +26,8 @@ def fetch_articles(logger, search_keyword, oldest_date=None):
         'sortby': 'relevance',
         'token': API_KEY,
         'to': updated_oldest_date.isoformat() + 'Z' if updated_oldest_date else None,
-        'max': MAX_ARTICLES_PER_REQUEST
+        'max': MAX_ARTICLES_PER_REQUEST,
+        'expand': 'content'
     }
 
     logger.info(f"Sending request for keyword: {search_keyword}, params: {params}")
@@ -45,8 +46,9 @@ def fetch_articles(logger, search_keyword, oldest_date=None):
                 'title': article['title'],
                 'content': article['content'],
                 'published_date': datetime.fromisoformat(article['publishedAt'].replace("Z", "+00:00")).isoformat(),
-                'id': article['url']  # Assuming URL can be used as a unique identifier
+                'id': article['url'] # Assuming URL can be used as a unique identifier
             }
+            
             for article in articles
         ])
     else:
