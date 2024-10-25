@@ -28,13 +28,13 @@ from utils.metrics import (reward_function, count_adjectives, word_diversity,
 from utils.train_utils import (build_dataset, CastOutputToFloat, load_reward_model,
                          trainable_model_parameters, evaluate_humanity, 
                          ppo_collator)
-from utils.constants import LORA_RANK_DIMS
+from utils.constants import LORA_RANK_DIMS, MAX_NEW_TOKENS, MAX_LENGTH
 
 # Setup device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the T5-Small model and tokenizer
-model_name = "EleutherAI/gpt-neo-125M"
+model_name = "EleutherAI/gpt-neo-1.3B"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map=device)
 if tokenizer.pad_token is None:
@@ -56,15 +56,18 @@ lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM
 )
 
-max_new_tokens=2000
-
 input_text = dataset['train']['query'][0]
 
 input_ids = tokenizer(input_text, return_tensors="pt", padding=True).input_ids
+
+max_token_id = max(input_ids[0])
+vocab_size = tokenizer.vocab_size
+print(f"Max token ID: {max_token_id}, Vocab size: {vocab_size}")
         
-generation_config = GenerationConfig(max_new_tokens=max_new_tokens,
-                                        top_k=0.0,
-                                        top_p=1.0,
+generation_config = GenerationConfig(max_new_tokens=MAX_NEW_TOKENS,
+                                     max_length = MAX_LENGTH,
+                                        top_k=50,
+                                        top_p=0.95,
                                         do_sample=True)
 
 response_token_ids = model.generate(input_ids=input_ids,

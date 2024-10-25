@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification, GenerationConfig
-from torch.utils.data import DataLoader, TensorDataset
+from datasets import Dataset, DatasetDict
 
 from utils.constants import TRAIN_BATCH_SIZE, MAX_NEW_TOKENS
 
@@ -14,81 +14,61 @@ from utils.constants import TRAIN_BATCH_SIZE, MAX_NEW_TOKENS
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_datasets(train_path, val_path, test_path, sample=None):
-    # Check if files exist
-    for path in [train_path, val_path, test_path]:
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"File not found: {path}")
-    
-    # Load JSON files into Pandas DataFrames with NDJSON format
-    try:
-        train_df = pd.read_json(train_path, orient="records", lines=True)
-        val_df = pd.read_json(val_path, orient="records", lines=True)
-        test_df = pd.read_json(test_path, orient="records", lines=True)
-    except ValueError as e:
-        print(f"Error reading JSON file: {e}")
-        raise
+    # Load the JSON files into Pandas DataFrames
+    train_df = pd.read_json(train_path, orient="records", lines=True)
+    val_df = pd.read_json(val_path, orient="records", lines=True)
+    test_df = pd.read_json(test_path, orient="records", lines=True)
 
-    # Sample if sample size is specified, and reset the index
     if sample is not None:
         train_df = train_df.sample(n=sample).reset_index(drop=True)
         val_df = val_df.sample(n=sample).reset_index(drop=True)
         test_df = test_df.sample(n=sample).reset_index(drop=True)
 
-    train_features = torch.tensor(train_df['content'].tolist())
-    train_labels = torch.tensor(train_df['title'].tolist())
+    # Convert the DataFrames to Hugging Face Datasets
+    train_dataset = Dataset.from_pandas(train_df)
+    val_dataset = Dataset.from_pandas(val_df)
+    test_dataset = Dataset.from_pandas(test_df)
 
-    val_features = torch.tensor(val_df['content'].tolist())
-    val_labels = torch.tensor(val_df['title'].tolist())
-
-    test_features = torch.tensor(test_df['content'].tolist())
-    test_labels = torch.tensor(test_df['title'].tolist())
-
-    # Create TensorDataset for train, validation, and test
-    train_dataset = TensorDataset(train_features, train_labels)
-    val_dataset = TensorDataset(val_features, val_labels)
-    test_dataset = TensorDataset(test_features, test_labels)
-
-    # Combine into a single dataset dictionary
-    dataset = {
+    # Combine into a DatasetDict
+    dataset = DatasetDict({
         'train': train_dataset,
         'validation': val_dataset,
         'test': test_dataset
-    }
+    })
 
     return dataset
 
-def build_dataset(tokenizer, sample = None):
-
-    dataset = load_datasets(train_path = "./data/preprocessed/train.json",
-                            test_path = "./data/preprocessed/test.json",
-                            val_path = "./data/preprocessed/val.json",
-                            sample = sample)
-
-    def tokenize(dataset):
-        
-        # Wrap each article with the instruction.
-        prompt = f"""
-                What would be an appropriate title for the article?
-
-                {dataset["content"]}
-
-                Title:
-                """
-        dataset["input_ids"] = tokenizer.encode(prompt)
-        
-        # This must be called "query", which is a requirement of our PPO library.
-        dataset["query"] = tokenizer.decode(dataset["input_ids"])
-        return dataset
+def build_dataset(tokenizer, sample=None):
     
-    # Tokenize each article
-    splits = ['train', 'validation', 'test']
-    for split in splits:
-        
-        dataset[split] = dataset[split].map(tokenize, batched=False)
-        dataset[split].set_format(type="torch")
+    # Load the datasets as pandas DataFrames
+    dataset = load_datasets(
+        train_path="./data/preprocessed/train.json",
+        val_path="./data/preprocessed/val.json",
+        test_path="./data/preprocessed/test.json",
+        sample=sample
+    )
+
+    def tokenize(sample):
+        # Define your prompt
+        prompt = f"""
+                    What would be an appropriate title for the article?
+
+                    {sample["content"]}
+
+                    Title:
+                    """
+        # Tokenize the prompt
+        sample["input_ids"] = tokenizer.encode(prompt)
+        sample["query"] = tokenizer.decode(sample["input_ids"])
+        return sample
+
+    # Apply tokenization to the dataset
+    dataset = dataset.map(tokenize, batched=False)
+
+    # Set format to PyTorch tensors (if required for further processing)
+    dataset.set_format(type="torch")
 
     return dataset
-
 
 def load_reward_model(reward_model_name = "roberta-base-openai-detector"):
 
@@ -171,6 +151,7 @@ def evaluate_humanity(model,
         generation_config = GenerationConfig(max_new_tokens=MAX_NEW_TOKENS,
                                              top_k=0.0,
                                              top_p=1.0,
+                                             temperature=0.7,
                                              do_sample=True)
 
         response_token_ids = model.generate(input_ids=input_ids,
