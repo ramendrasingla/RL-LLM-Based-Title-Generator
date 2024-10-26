@@ -1,10 +1,21 @@
 import logging
-from datetime import timezone
 from logging.handlers import RotatingFileHandler
+
+def generate_id(input_data):
+    """
+    Generates a unique integer ID for the given input data.
+
+    Args:
+        input_data (str, int, or any hashable object): Input data to generate the ID from.
+
+    Returns:
+        int: A unique integer ID.
+    """
+    return abs(hash(input_data))
 
 # Configure logging
 def setup_logging(log_path = './data/logs/pipeline.log'):
-    logger = logging.getLogger('stock_pipeline')
+    logger = logging.getLogger('title_generator')
     logger.setLevel(logging.INFO)
 
     # Create a file handler for logging to a file
