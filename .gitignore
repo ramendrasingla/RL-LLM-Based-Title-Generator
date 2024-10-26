@@ -10,6 +10,12 @@ __pycache__/
 # C extensions
 *.so
 
+# Testing notebooks
+test.ipynb
+
+# Ignore .env file
+.env
+
 # Distribution / packaging
 .Python
 build/
