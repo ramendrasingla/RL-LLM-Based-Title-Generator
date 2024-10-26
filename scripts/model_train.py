@@ -28,7 +28,12 @@ from utils.metrics import (reward_function, count_adjectives, word_diversity,
 from utils.train_utils import (build_dataset, CastOutputToFloat, load_reward_model,
                          trainable_model_parameters, evaluate_humanity, 
                          ppo_collator)
-from utils.constants import LORA_RANK_DIMS, MAX_NEW_TOKENS, MAX_LENGTH
+from utils.helper_funcs import setup_logging
+from utils.constants import LORA_RANK_DIMS, MAX_NEW_TOKENS, MAX_LENGTH, MAX_TOKENS
+
+# Setup Logging
+global logger
+logger = setup_logging()
 
 # Setup device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,7 +49,7 @@ if tokenizer.pad_token is None:
 model.generation_config.pad_token_id = tokenizer.pad_token_id
 
 # Get the dataset
-dataset = build_dataset(tokenizer=tokenizer, sample=100)
+dataset = build_dataset(logger, tokenizer=tokenizer, sample=100)
 
 # Configuration for LoRA
 lora_config = LoraConfig(
@@ -67,7 +72,8 @@ print(f"Max token ID: {max_token_id}, Vocab size: {vocab_size}")
 generation_config = GenerationConfig(max_new_tokens=MAX_NEW_TOKENS,
                                      max_length = MAX_LENGTH,
                                         top_k=50,
-                                        top_p=0.95,
+                                        top_p=0.85,
+                                        temperature=0.7,
                                         do_sample=True)
 
 response_token_ids = model.generate(input_ids=input_ids,

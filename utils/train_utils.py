@@ -8,21 +8,48 @@ from datasets import load_dataset
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification, GenerationConfig
 from datasets import Dataset, DatasetDict
 
-from utils.constants import TRAIN_BATCH_SIZE, MAX_NEW_TOKENS
+from utils.constants import TRAIN_BATCH_SIZE, MAX_NEW_TOKENS, MAX_TOKENS
 
 # Setup device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def load_datasets(train_path, val_path, test_path, sample=None):
-    # Load the JSON files into Pandas DataFrames
+# Function to split text into manageable chunks
+def split_text(text, max_tokens=MAX_TOKENS):
+    words = text.split()
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    for word in words:
+        current_length += len(word) + 1  # Account for spaces
+        if current_length >= max_tokens:
+            chunks.append(" ".join(current_chunk))
+            current_chunk = []
+            current_length = len(word) + 1
+        current_chunk.append(word)
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+    return chunks
+
+def load_datasets(train_path, val_path, test_path, sample=None, max_tokens=MAX_TOKENS):
+    # Load JSON files into Pandas DataFrames
     train_df = pd.read_json(train_path, orient="records", lines=True)
     val_df = pd.read_json(val_path, orient="records", lines=True)
     test_df = pd.read_json(test_path, orient="records", lines=True)
 
+    # Optionally sample the datasets
     if sample is not None:
         train_df = train_df.sample(n=sample).reset_index(drop=True)
         val_df = val_df.sample(n=sample).reset_index(drop=True)
         test_df = test_df.sample(n=sample).reset_index(drop=True)
+
+    # Apply split_text function and explode the content column for each DataFrame
+    train_df["content"] = train_df["content"].apply(lambda x: split_text(x, max_tokens=max_tokens))
+    val_df["content"] = val_df["content"].apply(lambda x: split_text(x, max_tokens=max_tokens))
+    test_df["content"] = test_df["content"].apply(lambda x: split_text(x, max_tokens=max_tokens))
+
+    train_df = train_df.explode("content").reset_index(drop=True)
+    val_df = val_df.explode("content").reset_index(drop=True)
+    test_df = test_df.explode("content").reset_index(drop=True)
 
     # Convert the DataFrames to Hugging Face Datasets
     train_dataset = Dataset.from_pandas(train_df)
@@ -38,24 +65,29 @@ def load_datasets(train_path, val_path, test_path, sample=None):
 
     return dataset
 
-def build_dataset(tokenizer, sample=None):
-    
+def build_dataset(logger, tokenizer, sample=None, max_tokens=MAX_TOKENS):
     # Load the datasets as pandas DataFrames
     dataset = load_datasets(
         train_path="./data/preprocessed/train.json",
         val_path="./data/preprocessed/val.json",
         test_path="./data/preprocessed/test.json",
-        sample=sample
+        sample=sample, 
+        max_tokens=MAX_TOKENS
     )
 
+    if dataset is None:
+        logger.error("Failed to load datasets. Exiting build_dataset.")
+        return None
+
+    # Tokenize each sample and generate prompts for each chunk
     def tokenize(sample):
+        # TODO: Pick prompt from constants
         # Define your prompt
+
         prompt = f"""
-                    What would be an appropriate title for the article?
+                    Write a catchy title that summarizes the primary message and unique insights from this text.
 
                     {sample["content"]}
-
-                    Title:
                     """
         # Tokenize the prompt
         sample["input_ids"] = tokenizer.encode(prompt)
