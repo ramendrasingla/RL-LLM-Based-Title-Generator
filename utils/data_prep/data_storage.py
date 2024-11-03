@@ -2,7 +2,7 @@ import json
 import os
 import pandas as pd
 from pathlib import Path
-from utils.constants import DATA_INGESTION_OUTPUT_FILE, DATA_INGESTION_PIPELINE_LOG_FILE
+from utils.common.constants import DATA_INGESTION_OUTPUT_FILE, DATA_INGESTION_PIPELINE_LOG_FILE
 
 def load_oldest_article_dates(logger):
     """Load the oldest published dates for each theme from a JSON file."""

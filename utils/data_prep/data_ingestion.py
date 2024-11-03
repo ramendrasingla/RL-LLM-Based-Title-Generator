@@ -2,8 +2,8 @@ import os
 import requests
 from tqdm import tqdm
 from datetime import datetime, timedelta
-from utils.data_storage import (load_oldest_article_dates, save_articles_to_json, save_oldest_article_dates)
-from utils.constants import (API_KEY, MAX_ARTICLES_PER_REQUEST, MAX_ITERATIONS,
+from utils.data_prep.data_storage import (load_oldest_article_dates, save_articles_to_json, save_oldest_article_dates)
+from utils.common.constants import (API_KEY, MAX_ARTICLES_PER_REQUEST, MAX_ITERATIONS,
                             DATA_INGESTION_OUTPUT_FILE, DATA_INGESTION_PIPELINE_LOG_FILE, 
                             themes_keywords)
 

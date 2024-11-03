@@ -2,180 +2,185 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
 
-import pandas as pd
 import torch
-import json
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-from transformers import LlamaForCausalLM, LlamaTokenizer
-import argparse
-from peft import get_peft_model, LoraConfig, PeftModel, TaskType
-
+from accelerate import Accelerator
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from peft import get_peft_model, LoraConfig, TaskType
 # trl: Transformer Reinforcement Learning library
-from trl import PPOTrainer, PPOConfig, AutoModelForSeq2SeqLMWithValueHead
-from trl import create_reference_model
-from trl.core import LengthSampler
-
-import torch
-import evaluate
-
+from trl import PPOTrainer, PPOConfig, AutoModelForSeq2SeqLMWithValueHead, create_reference_model
+# Mlflow logging and registry
+import mlflow
 # tqdm library makes the loops show a smart progress meter.
-from tqdm import tqdm
 tqdm.pandas()
 
-from utils.metrics import (reward_function, count_adjectives, word_diversity,
-                     get_sentiment, pos_pattern_matching)
-from utils.train_utils import (build_dataset, CastOutputToFloat, load_reward_model,
-                         trainable_model_parameters, evaluate_humanity, 
-                         ppo_collator)
-from utils.helper_funcs import setup_logging
-from utils.constants import LORA_RANK_DIMS, MAX_NEW_TOKENS, MAX_LENGTH, MAX_TOKENS
+from utils.model_training.metrics import get_all_metrics
+from utils.model_training.model_train_utils import (build_dataset, probability_of_human_generated,
+                                     trainable_model_parameters, evaluate_humanity, 
+                                     ppo_collator, load_latest_model)
+from utils.common.helper_funcs import setup_logging
+from utils.common.constants import (   LEARNING_RATE,
+                                MAX_PPO_EPOCHS,
+                                MINI_BATCH_SIZE,
+                                TRAIN_BATCH_SIZE,
+                                MAX_NEW_TOKENS,
+                                LORA_RANK_DIMS,
+                                generation_kwargs,
+                                SAMPLE)
+
+# Set up MLflow
+experiment_name = 'RL_LLM_Title_Generator'
+
+# Check if the experiment already exists
+try:
+    mlflow.set_experiment(experiment_name)
+except mlflow.exceptions.MlflowException as e:
+    if "does not exist" in str(e):
+        # Create a new experiment if it does not exist
+        mlflow.create_experiment(experiment_name)
+        mlflow.set_experiment(experiment_name)
+    else:
+        raise
 
 # Setup Logging
 global logger
 logger = setup_logging()
 
 # Setup device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device('mps' if torch.mps.is_available() else ('gpu' if torch.gpu.is_available() else 'cpu'))
 
-# Load the T5-Small model and tokenizer
-model_name = "EleutherAI/gpt-neo-1.3B"
+# Load model
+model_name = "google/flan-t5-large"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map=device)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
 if tokenizer.pad_token is None:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     model.resize_token_embeddings(len(tokenizer))
 
 model.generation_config.pad_token_id = tokenizer.pad_token_id
 
+
 # Get the dataset
-dataset = build_dataset(logger, tokenizer=tokenizer, sample=100)
+dataset = build_dataset(logger, tokenizer=tokenizer, sample=SAMPLE)
 
 # Configuration for LoRA
 lora_config = LoraConfig(
     r=LORA_RANK_DIMS,  # Rank
     lora_alpha=LORA_RANK_DIMS,
-    target_modules=["attn.c_attn"],
+    target_modules=["q", "v"],
     lora_dropout=0.05,
     bias="none",
-    task_type=TaskType.CAUSAL_LM
+    task_type=TaskType.SEQ_2_SEQ_LM
 )
 
-input_text = dataset['train']['query'][0]
+# Load or initialize the PEFT model with LoRA configuration
+peft_model = get_peft_model(model, lora_config).to(device=device)
 
-input_ids = tokenizer(input_text, return_tensors="pt", padding=True).input_ids
+ppo_model = AutoModelForSeq2SeqLMWithValueHead.from_pretrained(peft_model,                                                               
+                                                               torch_dtype=torch.bfloat16,
+                                                               is_trainable=True)
 
-max_token_id = max(input_ids[0])
-vocab_size = tokenizer.vocab_size
-print(f"Max token ID: {max_token_id}, Vocab size: {vocab_size}")
+print(f'PPO model parameters to be updated (ValueHead + 769 params):\n{trainable_model_parameters(ppo_model)}\n')
+print(ppo_model.v_head)
+
+ref_model = create_reference_model(ppo_model).to(device)
+
+# Evaluate the model at the end of the epoch
+mean_before_fine_tuning, std_before_fine_tuning, ref_model_predicted_title = evaluate_humanity(model = ref_model, 
+                                                                                               tokenizer = tokenizer, 
+                                                                                               dataset = dataset["test"])
+linguistic_metrics_before_fine_tuning = get_all_metrics(ref_model_predicted_title, dataset["test"]["title"])
+
+print(f'Humanity [mean, std] before fine-tuning: [{mean_before_fine_tuning}, {std_before_fine_tuning}]')
+
+# Start MLflow logging
+with mlflow.start_run(run_name="ref_model"):
+
+    # Log the reference model humanity scores
+    mlflow.log_metric("mean_humanity_score", mean_before_fine_tuning, step=0)
+    mlflow.log_metric("std_humanity_score", std_before_fine_tuning, step=0)
+
+    for k, v in linguistic_metrics_before_fine_tuning.items():
+        mlflow.log_metric(k, v, step=0)
+
+    # Log the reference model
+    mlflow.pytorch.log_model(ref_model, "ref_model")
+
+# Initialize accelerator
+accelerator = Accelerator()
+device = accelerator.device
+
+# Initialize PPO config and trainer
+config = PPOConfig(
+    model_name=model_name,    
+    learning_rate=LEARNING_RATE,
+    ppo_epochs=MAX_PPO_EPOCHS,
+    mini_batch_size=MINI_BATCH_SIZE,
+    batch_size=TRAIN_BATCH_SIZE
+)
+
+ppo_trainer = PPOTrainer(
+    config=config, 
+    model=ppo_model, 
+    ref_model=ref_model, 
+    tokenizer=tokenizer, 
+    dataset=dataset["train"], 
+    data_collator=ppo_collator
+)
+
+# Wrap dataloader and model for multi-GPU
+ppo_trainer.dataloader = accelerator.prepare(ppo_trainer.dataloader)
+ppo_trainer.model = accelerator.prepare(ppo_trainer.model)
+
+# Optional: Load the latest model from MLflow
+# load_latest_model(ppo_trainer)
+
+with mlflow.start_run():
+    print("Starting PPO training and logging with MLflow...")
+
+    for epoch in range(ppo_trainer.config.ppo_epochs):
+        print(f"\n=== Starting Epoch {epoch + 1}/{ppo_trainer.config.ppo_epochs} ===\n")
         
-generation_config = GenerationConfig(max_new_tokens=MAX_NEW_TOKENS,
-                                     max_length = MAX_LENGTH,
-                                        top_k=50,
-                                        top_p=0.85,
-                                        temperature=0.7,
-                                        do_sample=True)
+        for step, batch in enumerate(ppo_trainer.dataloader):
+            # Move inputs to the relevant device using accelerator
+            prompt_tensors = [t.to(torch.long).to(device) for t in batch["input_ids"]]
 
-response_token_ids = model.generate(input_ids=input_ids,
-                                    generation_config=generation_config)
+            print(f"Generating responses for step {step + 1}...")
+            # Generate and move responses to device
+            title_tensors = [t.to(torch.long).to(device) for t in ppo_trainer.generate(prompt_tensors, **generation_kwargs)]
 
-generated_text = tokenizer.decode(response_token_ids[0], skip_special_tokens=True)
+            batch["response"] = [tokenizer.decode(r, skip_special_tokens=True) for r in title_tensors]
 
-print(generated_text)
-print("*"*50)
-print(dataset['train']['title'][0])
+            print("Calculating rewards in batch...")
+            batch_humanity_scores = probability_of_human_generated(batch["response"])
+            reward_tensors = [torch.tensor(t, dtype=torch.float32).to(device) for t in batch_humanity_scores]
 
-# # Load or initialize the PEFT model with LoRA configuration
-# peft_model = get_peft_model(model, lora_config).to(device=device)
+            print("Running PPO step...")
+            # Use accelerator with the step function
+            stats = accelerator.unwrap_model(ppo_trainer).step(prompt_tensors, title_tensors, reward_tensors)
 
-# # Print number of trainable parameters for LoRA adaptation
-# print(f'PEFT model parameters to be updated:\n{trainable_model_parameters(peft_model)}\n')
+            if (step + 1) % 10 == 0 or step == len(ppo_trainer.dataloader) - 1:
+                accelerator.print(f"Logging stats for step {step + 1}...")
+                ppo_trainer.log_stats(stats, batch, reward_tensors)
 
-# ppo_model = AutoModelForSeq2SeqLMWithValueHead.from_pretrained(peft_model,                                                               
-#                                                                torch_dtype=torch.bfloat16,
-#                                                                is_trainable=True)
+            # Clear GPU memory
+            del prompt_tensors, title_tensors, reward_tensors
 
-# print(f'PPO model parameters to be updated (ValueHead + 769 params):\n{trainable_model_parameters(ppo_model)}\n')
-# print(ppo_model.v_head)
-
-# ref_model = create_reference_model(ppo_model)
-
-# print(f'Reference model parameters to be updated:\n{trainable_model_parameters(ref_model)}\n')
-
-# mean_before_fine_tuning, std_before_fine_tuning = evaluate_humanity(model=ref_model, 
-#                                                                           tokenizer=tokenizer, 
-#                                                                           dataset=dataset["test"], 
-#                                                                           num_samples=10)
-
-# print(f'Humanity [mean, std] before fine-tuning: [{mean_before_fine_tuning}, {std_before_fine_tuning}]')
-
-# learning_rate=1.41e-5
-# max_ppo_epochs=1
-# mini_batch_size=4
-# batch_size=16
-
-# config = PPOConfig(
-#     model_name=model_name,    
-#     learning_rate=learning_rate,
-#     ppo_epochs=max_ppo_epochs,
-#     mini_batch_size=mini_batch_size,
-#     batch_size=batch_size
-# )
-
-# ppo_trainer = PPOTrainer(config=config, 
-#                          model=ppo_model, 
-#                          ref_model=ref_model, 
-#                          tokenizer=tokenizer, 
-#                          dataset=dataset["train"], 
-#                          data_collator=ppo_collator)
-
-# output_min_length = 100
-# output_max_length = 400
-# max_ppo_steps = 10
-# output_length_sampler = LengthSampler(output_min_length, output_max_length)
-
-# generation_kwargs = {
-#     "min_length": 5,
-#     "top_k": 0.0,
-#     "top_p": 1.0,
-#     "do_sample": True
-# }
-
-# reward_pipe, reward_kwargs = load_reward_model()
-
-# for step, batch in tqdm(enumerate(ppo_trainer.dataloader)):
-#     # Break when you reach max_steps.
-#     if step >= max_ppo_steps:
-#         break   
-
-#     prompt_tensors = batch["input_ids"]
-
-#     # Get response from FLAN-T5/PEFT LLM.
-#     summary_tensors = []
-
-#     for prompt_tensor in prompt_tensors:
-#         max_new_tokens = output_length_sampler()        
-            
-#         generation_kwargs["max_new_tokens"] = max_new_tokens
-#         summary = ppo_trainer.generate(prompt_tensor, **generation_kwargs)
+        print("Evaluating humanity score for test set...")
+        mean, std, predicted_title = evaluate_humanity(
+            model=accelerator.unwrap_model(ppo_trainer.model), tokenizer=tokenizer, dataset=dataset["test"]
+        )
         
-#         summary_tensors.append(summary.squeeze()[-max_new_tokens:])
-        
-#     # This needs to be called "response".
-#     batch["response"] = [tokenizer.decode(r.squeeze()) for r in summary_tensors]
+        print("Calculating linguistic metrics...")
+        linguistic_metrics = get_all_metrics(predicted_title, dataset["test"]["title"])
 
-#     # Compute reward outputs. 
-#     rewards = reward_pipe(batch["response"], **reward_kwargs)
+        print("Logging metrics to MLflow...")
+        mlflow.log_metric("mean_humanity_score", mean, step=epoch + 1)
+        mlflow.log_metric("std_humanity_score", std, step=epoch + 1)
+        for k, v in linguistic_metrics.items():
+            mlflow.log_metric(k, v, step=epoch + 1)
 
-#     # You use the `human_generated_index` item because this is the score for the positive `human_generated_index` class.
-#     human_generated_index = 1
-#     reward_tensors = [torch.tensor(reward[human_generated_index]["score"]) for reward in rewards]    
+        print(f"Saving model state for epoch {epoch + 1}...")
+        mlflow.pytorch.log_model(accelerator.unwrap_model(ppo_trainer.model), f"model_epoch_{epoch + 1}")
 
-#     # Run PPO step.
-#     stats = ppo_trainer.step(prompt_tensors, summary_tensors, reward_tensors)
-#     ppo_trainer.log_stats(stats, batch, reward_tensors)
-    
-#     print(f'objective/kl: {stats["objective/kl"]}')
-#     print(f'ppo/returns/mean: {stats["ppo/returns/mean"]}')
-#     print(f'ppo/policy/advantages_mean: {stats["ppo/policy/advantages_mean"]}')
-#     print('-'.join('' for x in range(100)))
+        print(f"\nEnd of epoch {epoch + 1} - mean humanity score: {mean:.4f}, std: {std:.4f}\n")
