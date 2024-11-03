@@ -7,11 +7,11 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from multiprocessing import Pool, cpu_count
 
-from utils.data_ingestion import data_ingestion_pipeline
-from utils.data_preprocessing import preprocess_text
-from utils.data_storage import save_dataframe
-from utils.helper_funcs import setup_logging
-from utils.constants import DATA_INGESTION_OUTPUT_FILE, PREPROCESSED_DATA_PATH
+from utils.data_prep.data_ingestion import data_ingestion_pipeline
+from utils.data_prep.data_preprocessing import preprocess_text
+from utils.data_prep.data_storage import save_dataframe
+from utils.common.helper_funcs import setup_logging
+from utils.common.constants import DATA_INGESTION_OUTPUT_FILE, PREPROCESSED_DATA_PATH
 
 # Setup Logging
 global logger

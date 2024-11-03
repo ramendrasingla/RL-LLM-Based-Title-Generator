@@ -16,6 +16,10 @@ test.ipynb
 # Ignore .env file
 .env
 
+# Mlflow runs
+mlruns/
+.mlruns
+
 # Distribution / packaging
 .Python
 build/
