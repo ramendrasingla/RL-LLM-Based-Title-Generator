@@ -6,7 +6,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from datasets import Dataset, DatasetDict
 
-from utils.common.constants import generation_config, CHECKPOINT_DIR_PATH, EVAL_BATCH_SIZE, MAX_LENGTH
+from utils.common.constants import generation_config, EVAL_BATCH_SIZE, MAX_LENGTH
 
 # Setup device
 device = torch.device('mps' if torch.mps.is_available() else ('gpu' if torch.gpu.is_available() else 'cpu'))
