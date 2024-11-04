@@ -73,7 +73,7 @@ git clone https://github.com/ramendrasingla/RL-LLM-Based-Title-Generator.git
 Install the required dependencies:
 
 ```bash
-git clone https://github.com/ramendrasingla/RL-LLM-Based-Title-Generator.git
+pip install -r requirements.txt
 ```
 Set up the necessary API keys in the .env file for data collection from the GNEWS API and configure your MLflow server.
 
