@@ -53,10 +53,11 @@ The methodology follows a structured pipeline with the following steps:
 │   │   ├── data_ingestion.py        # Script for fetching data from GNEWS
 │   │   ├── data_preprocessing.py    # Script for data cleaning and formatting
 │   │   └── data_storage.py          # Script for storing and managing data files
-│   └── model_training/
+│   └── model_train/
 │       ├── __init__.py
 │       ├── metrics.py               # Script for defining and computing metrics
-│       └── model_train_utils.py     # Utility functions for model training
+│       ├── model_train_utils.py     # Utility functions for model training
+│       └── ppo_setup.py             # Setup to train model with PPO
 ├── .env                             # Environment variables (API keys, etc.)
 ├── .gitignore                       # Ignored files and directories
 ├── methodology.png                  # Methodology image
